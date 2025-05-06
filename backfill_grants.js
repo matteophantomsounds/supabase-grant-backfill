@@ -1,62 +1,51 @@
-// backfill_grants.js
+// backfill_grants.js with GPT-4 extraction
 const { createClient } = require('@supabase/supabase-js');
-const { XMLParser } = require('fast-xml-parser');
+const OpenAI = require('openai');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-function extractDeadline(text) {
-  const deadlineRegex = /deadline[:\s]*([0-9]{1,2}[\/\-.][0-9]{1,2}[\/\-.][0-9]{2,4})/i;
-  const match = text.match(deadlineRegex);
-  if (match && match[1]) {
-    try {
-      return new Date(match[1]).toISOString().split('T')[0];
-    } catch (e) {
-      return null;
-    }
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+async function extractWithGPT(bodyText) {
+  if (!bodyText || bodyText.length < 20) return {};
+  const prompt = `Extract the following fields from this grant description:
+- Deadline (in YYYY-MM-DD)
+- Eligibility
+- Amount (in plain text like "$100,000" or "$2 million")
+- Categories (as a list of relevant topics like Technology, Education, etc.)
+
+Respond in valid JSON format with keys: deadline, eligibility, amount, category
+
+Grant Description:
+"""
+${bodyText.slice(0, 4000)}
+"""`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        { role: 'system', content: 'You are a structured data extractor.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.2
+    });
+
+    const text = completion.choices[0].message.content.trim();
+    const json = JSON.parse(text);
+    return {
+      deadline: json.deadline || null,
+      eligibility: json.eligibility || null,
+      amount: json.amount || null,
+      category: Array.isArray(json.category) ? json.category : []
+    };
+  } catch (e) {
+    console.warn('⚠️ GPT extraction error:', e.message);
+    return {};
   }
-  return null;
-}
-
-function extractEligibility(text) {
-  const regex = /eligibility[:\s]*([^.\n]+)/i;
-  const match = text.match(regex);
-  return match ? match[1].trim() : null;
-}
-
-function extractAmount(text) {
-  const regex = /\$([\d,]+(?:\.\d+)?)(?:\s*(million|billion|thousand|k|m|b))?/i;
-  const match = text.match(regex);
-  if (!match) return null;
-  let amount = parseFloat(match[1].replace(/,/g, ''));
-  const unit = match[2]?.toLowerCase();
-  if (unit === 'billion' || unit === 'b') amount *= 1_000_000_000;
-  else if (unit === 'million' || unit === 'm') amount *= 1_000_000;
-  else if (unit === 'thousand' || unit === 'k') amount *= 1_000;
-  return `$${amount.toLocaleString()}`;
-}
-
-function determineCategories(text) {
-  const categories = [];
-  const lowerText = text.toLowerCase();
-  const categoryMap = {
-    'Technology': ['tech', 'software', 'hardware', 'digital'],
-    'Healthcare': ['health', 'medicine', 'clinical'],
-    'Environment': ['climate', 'sustainability', 'green', 'energy'],
-    'Education': ['school', 'education', 'university'],
-    'Research': ['research', 'study', 'investigation'],
-    'Social': ['community', 'welfare', 'nonprofit'],
-    'Arts': ['culture', 'museum', 'creative'],
-    'Agriculture': ['agriculture', 'farming', 'food']
-  };
-  for (const [cat, keywords] of Object.entries(categoryMap)) {
-    if (keywords.some(k => lowerText.includes(k))) {
-      categories.push(cat);
-    }
-  }
-  return categories.length > 0 ? categories : ['Other'];
 }
 
 async function run() {
@@ -64,7 +53,7 @@ async function run() {
     .from('grants')
     .select('id, body, eligibility_text, deadline, amount, category')
     .or('eligibility_text.is.null,deadline.is.null,amount.is.null,category.is.null')
-    .limit(500);
+    .limit(20); // limit to avoid hitting token or rate limits
 
   if (error) {
     console.error('❌ Error fetching grants:', error.message);
@@ -74,17 +63,19 @@ async function run() {
   let updated = 0;
   for (const g of grants) {
     const body = g.body || '';
-    const deadline = g.deadline || extractDeadline(body);
-    const eligibility = g.eligibility_text || extractEligibility(body);
-    const amount = g.amount || extractAmount(body);
-    const category = g.category && g.category.length > 0 ? g.category : determineCategories(body);
+    const result = await extractWithGPT(body);
 
-    console.log(`🔍 Grant ${g.id}:`, { deadline, eligibility, amount, category });
+    console.log(`🔍 Grant ${g.id}:`, result);
 
-    if (deadline || eligibility || amount || (category && category.length > 0)) {
+    if (result.deadline || result.eligibility || result.amount || (result.category && result.category.length > 0)) {
       const { error: updateError } = await supabase
         .from('grants')
-        .update({ deadline, eligibility_text: eligibility, amount, category })
+        .update({
+          deadline: result.deadline,
+          eligibility_text: result.eligibility,
+          amount: result.amount,
+          category: result.category
+        })
         .eq('id', g.id);
 
       if (updateError) {
@@ -95,7 +86,7 @@ async function run() {
     }
   }
 
-  console.log(`✅ Backfilled ${updated} grants.`);
+  console.log(`✅ Backfilled ${updated} grants using GPT.`);
 }
 
 (async () => {
