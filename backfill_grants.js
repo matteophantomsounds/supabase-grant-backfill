@@ -1,6 +1,6 @@
 // backfill_grants.js
-import { createClient } from '@supabase/supabase-js';
-import { XMLParser } from 'fast-xml-parser';
+const { createClient } = require('@supabase/supabase-js');
+const { XMLParser } = require('fast-xml-parser');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -66,4 +66,7 @@ async function run() {
   console.log(`✅ Backfilled ${updated} grants.`);
 }
 
-run();
+(async () => {
+  await run();
+})();
+
