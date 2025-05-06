@@ -4,6 +4,6 @@ WORKDIR /app
 
 COPY . .
 
-RUN npm install @supabase/supabase-js node-fetch fast-xml-parser
+RUN npm install @supabase/supabase-js fast-xml-parser openai
 
 CMD ["node", "backfill_grants.js"]
