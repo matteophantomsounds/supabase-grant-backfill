@@ -26,17 +26,44 @@ function extractEligibility(text) {
   return match ? match[1].trim() : null;
 }
 
-function extractDuration(text) {
-  const regex = /duration[:\s]*([^.\n]+)/i;
+function extractAmount(text) {
+  const regex = /\$([\d,]+(?:\.\d+)?)(?:\s*(million|billion|thousand|k|m|b))?/i;
   const match = text.match(regex);
-  return match ? match[1].trim() : null;
+  if (!match) return null;
+  let amount = parseFloat(match[1].replace(/,/g, ''));
+  const unit = match[2]?.toLowerCase();
+  if (unit === 'billion' || unit === 'b') amount *= 1_000_000_000;
+  else if (unit === 'million' || unit === 'm') amount *= 1_000_000;
+  else if (unit === 'thousand' || unit === 'k') amount *= 1_000;
+  return `$${amount.toLocaleString()}`;
+}
+
+function determineCategories(text) {
+  const categories = [];
+  const lowerText = text.toLowerCase();
+  const categoryMap = {
+    'Technology': ['tech', 'software', 'hardware', 'digital'],
+    'Healthcare': ['health', 'medicine', 'clinical'],
+    'Environment': ['climate', 'sustainability', 'green', 'energy'],
+    'Education': ['school', 'education', 'university'],
+    'Research': ['research', 'study', 'investigation'],
+    'Social': ['community', 'welfare', 'nonprofit'],
+    'Arts': ['culture', 'museum', 'creative'],
+    'Agriculture': ['agriculture', 'farming', 'food']
+  };
+  for (const [cat, keywords] of Object.entries(categoryMap)) {
+    if (keywords.some(k => lowerText.includes(k))) {
+      categories.push(cat);
+    }
+  }
+  return categories.length > 0 ? categories : ['Other'];
 }
 
 async function run() {
   const { data: grants, error } = await supabase
     .from('grants')
-    .select('id, body, deadline, eligibility_text, duration')
-    .or('deadline.is.null,eligibility_text.is.null,duration.is.null')
+    .select('id, body, eligibility_text, deadline, amount, category')
+    .or('eligibility_text.is.null,deadline.is.null,amount.is.null,category.is.null')
     .limit(500);
 
   if (error) {
@@ -49,17 +76,22 @@ async function run() {
     const body = g.body || '';
     const deadline = g.deadline || extractDeadline(body);
     const eligibility = g.eligibility_text || extractEligibility(body);
-    const duration = g.duration || extractDuration(body);
+    const amount = g.amount || extractAmount(body);
+    const category = g.category && g.category.length > 0 ? g.category : determineCategories(body);
 
-    const { error: updateError } = await supabase
-      .from('grants')
-      .update({ deadline, eligibility_text: eligibility, duration })
-      .eq('id', g.id);
+    console.log(`🔍 Grant ${g.id}:`, { deadline, eligibility, amount, category });
 
-    if (updateError) {
-      console.error(`❌ Error updating grant ${g.id}:`, updateError.message);
-    } else {
-      updated++;
+    if (deadline || eligibility || amount || (category && category.length > 0)) {
+      const { error: updateError } = await supabase
+        .from('grants')
+        .update({ deadline, eligibility_text: eligibility, amount, category })
+        .eq('id', g.id);
+
+      if (updateError) {
+        console.error(`❌ Error updating grant ${g.id}:`, updateError.message);
+      } else {
+        updated++;
+      }
     }
   }
 
@@ -69,4 +101,3 @@ async function run() {
 (async () => {
   await run();
 })();
-
